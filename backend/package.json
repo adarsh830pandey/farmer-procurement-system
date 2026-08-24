@@ -1,29 +1,33 @@
 {
   "name": "farmer-procurement-backend",
-  "version": "1.0.0",
-  "description": "Backend API for Digital Procurement and Queue Management Platform for Farmers (SIH)",
+  "version": "2.0.0",
+  "description": "PostgreSQL-backed API for Digital Procurement and Queue Management Platform for Farmers (SIH)",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "db:migrate": "node src/database/migrate.js",
+    "db:seed": "node src/database/seed.js"
   },
   "keywords": [
     "procurement",
     "farmers",
     "sih",
     "express",
-    "mongodb",
+    "postgresql",
     "queue-management"
   ],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "mongoose": "^9.9.3",
-    "morgan": "^1.11.0"
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.11.0",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
