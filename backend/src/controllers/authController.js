@@ -3,39 +3,50 @@ import { query, withTransaction } from '../config/db.js';
 import { generateToken } from '../utils/tokenGenerator.js';
 
 /**
- * 1. Register Farmer
+ * 1. Register User (Farmer, Buyer, or Admin)
  * POST /api/auth/register
  */
-export const registerFarmer = async (req, res, next) => {
+export const registerUser = async (req, res, next) => {
   try {
     const {
       name,
-      mobile,
+      email,
+      phone,
+      mobile, // support both phone and mobile
       password,
-      aadhaarLast4,
-      state,
-      district,
-      village,
+      role = 'farmer',
       address,
+      village,
+      district,
+      state,
+      // Farmer specific
+      landArea,
       landAcres,
+      crops,
       primaryCrop,
-      estimatedQuantityQuintals,
+      bankAccountNumber,
+      ifscCode,
       bankDetails,
+      // Buyer specific
+      organizationName,
+      licenseNumber,
     } = req.body;
 
-    if (!name || !mobile || !password || !village || !district || !state) {
+    const userPhone = phone || mobile;
+
+    if (!name || !userPhone || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide all required fields (Name, Mobile, Password, Village, District, State).',
+        message: 'Please provide all required fields (Name, Phone/Mobile, and Password).',
       });
     }
 
-    // Check if farmer with this mobile number already exists
-    const existing = await query('SELECT id, mobile_number FROM farmers WHERE mobile_number = $1', [mobile]);
-    if (existing.rows.length > 0) {
+    // Check if phone already registered
+    const existingUser = await query('SELECT id, phone FROM users WHERE phone = $1', [userPhone]);
+    if (existingUser.rows.length > 0) {
       return res.status(400).json({
         success: false,
-        message: 'A farmer is already registered with this mobile number. Please login.',
+        message: 'An account with this mobile number already exists. Please login.',
       });
     }
 
@@ -43,76 +54,90 @@ export const registerFarmer = async (req, res, next) => {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
-    // Generate Farmer ID (e.g. KP-2026-XXXX)
-    const farmerCode = `KP-2026-${mobile.slice(-4)}`;
+    const userRole = ['farmer', 'buyer', 'admin'].includes(role) ? role : 'farmer';
 
-    const bankAccount = bankDetails?.accountNumber || '';
-    const ifscCode = bankDetails?.ifscCode || '';
+    const registeredUser = await withTransaction(async (client) => {
+      // 1. Insert into users table
+      const uRes = await client.query(
+        `INSERT INTO users (name, email, phone, password_hash, role, address, village, district, state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, name, email, phone, role, address, village, district, state, created_at`,
+        [
+          name,
+          email || null,
+          userPhone,
+          passwordHash,
+          userRole,
+          address || '',
+          village || '',
+          district || 'Ghaziabad',
+          state || 'Uttar Pradesh',
+        ]
+      );
+      const newUser = uRes.rows[0];
 
-    // Insert into PostgreSQL
-    const insertSql = `
-      INSERT INTO farmers (
-        farmer_code, name, mobile_number, aadhaar_last4, password_hash,
-        address, village, district, state, land_acres, primary_crop,
-        estimated_quantity, bank_account, ifsc_code, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'VERIFIED')
-      RETURNING id, farmer_code, name, mobile_number, aadhaar_last4, village, district, state, land_acres, primary_crop, estimated_quantity, bank_account, ifsc_code, status, registration_date
-    `;
+      let profileData = {};
 
-    const result = await query(insertSql, [
-      farmerCode,
-      name,
-      mobile,
-      aadhaarLast4 || mobile.slice(-4),
-      passwordHash,
-      address || '',
-      village,
-      district,
-      state,
-      Number(landAcres) || 0,
-      primaryCrop || 'Paddy (Rice)',
-      Number(estimatedQuantityQuintals) || 0,
-      bankAccount,
-      ifscCode,
-    ]);
+      // 2. Insert into role-specific table
+      if (userRole === 'farmer') {
+        const farmerCode = `KP-2026-${userPhone.slice(-4)}`;
+        const fRes = await client.query(
+          `INSERT INTO farmers (user_id, farmer_id, land_area, crops, bank_account_number, ifsc_code)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, farmer_id, land_area, crops`,
+          [
+            newUser.id,
+            farmerCode,
+            Number(landArea || landAcres) || 0.0,
+            crops || primaryCrop || 'Paddy (Rice)',
+            bankAccountNumber || bankDetails?.accountNumber || '',
+            ifscCode || bankDetails?.ifscCode || '',
+          ]
+        );
+        profileData = fRes.rows[0];
 
-    const newFarmer = result.rows[0];
+        // Create welcome notification
+        await client.query(
+          `INSERT INTO notifications (user_id, title, message, notification_type)
+           VALUES ($1, 'Welcome to Kisan Procurement', $2, 'REGISTRATION_SUCCESS')`,
+          [newUser.id, `Welcome ${newUser.name}! Your Farmer ID is ${farmerCode}. You can now book slots and list crops.`]
+        );
+      } else if (userRole === 'buyer') {
+        const bRes = await client.query(
+          `INSERT INTO buyers (user_id, organization_name, license_number, address)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, organization_name, license_number`,
+          [
+            newUser.id,
+            organizationName || `${name} Enterprises`,
+            licenseNumber || `LIC-${Date.now().toString().slice(-6)}`,
+            address || '',
+          ]
+        );
+        profileData = bRes.rows[0];
+      }
 
-    // Create initial welcome notification
-    await query(
-      `INSERT INTO notifications (farmer_id, type, message) VALUES ($1, $2, $3)`,
-      [
-        newFarmer.id,
-        'REGISTRATION_SUCCESS',
-        `Welcome ${newFarmer.name}! Your Kisan Procurement ID is ${newFarmer.farmer_code}. You can now book procurement slots online.`,
-      ]
-    );
+      return {
+        ...newUser,
+        profile: profileData,
+      };
+    });
 
-    // Generate JWT token
     const token = generateToken({
-      id: newFarmer.id,
-      role: 'farmer',
-      mobile: newFarmer.mobile_number,
-      name: newFarmer.name,
+      id: registeredUser.id,
+      role: registeredUser.role,
+      phone: registeredUser.phone,
+      name: registeredUser.name,
+      farmerId: registeredUser.profile?.id,
+      farmerCode: registeredUser.profile?.farmer_id,
     });
 
     res.status(201).json({
       success: true,
-      message: 'Farmer registered successfully',
+      message: 'Registration successful',
       token,
-      user: {
-        id: newFarmer.id,
-        farmerCode: newFarmer.farmer_code,
-        name: newFarmer.name,
-        mobile: newFarmer.mobile_number,
-        village: newFarmer.village,
-        district: newFarmer.district,
-        state: newFarmer.state,
-        landAcres: newFarmer.land_acres,
-        primaryCrop: newFarmer.primary_crop,
-        estimatedQuantity: newFarmer.estimated_quantity,
-        status: newFarmer.status,
-      },
+      data: registeredUser,
+      user: registeredUser, // backward compatibility
     });
   } catch (err) {
     next(err);
@@ -120,36 +145,42 @@ export const registerFarmer = async (req, res, next) => {
 };
 
 /**
- * 2. Farmer Login
+ * 2. Login User
  * POST /api/auth/login
  */
-export const loginFarmer = async (req, res, next) => {
+export const loginUser = async (req, res, next) => {
   try {
-    const { mobile, password } = req.body;
+    const { phone, mobile, email, username, password } = req.body;
+    const identifier = phone || mobile || email || username;
 
-    if (!mobile || !password) {
+    if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide mobile number and password.',
+        message: 'Please provide phone/email and password.',
       });
     }
 
     const result = await query(
-      `SELECT * FROM farmers WHERE mobile_number = $1`,
-      [mobile]
+      `SELECT u.*,
+              f.id as farmer_db_id, f.farmer_id as farmer_code, f.land_area, f.crops,
+              b.id as buyer_db_id, b.organization_name
+       FROM users u
+       LEFT JOIN farmers f ON u.id = f.user_id
+       LEFT JOIN buyers b ON u.id = b.user_id
+       WHERE u.phone = $1 OR u.email = $1 OR u.name = $1`,
+      [identifier]
     );
 
     if (result.rows.length === 0) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials. No registered farmer found with this mobile number.',
+        message: 'Invalid credentials. User not found.',
       });
     }
 
-    const farmer = result.rows[0];
+    const user = result.rows[0];
 
-    // Verify password
-    const isMatch = await bcrypt.compare(password, farmer.password_hash);
+    const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -158,32 +189,25 @@ export const loginFarmer = async (req, res, next) => {
     }
 
     const token = generateToken({
-      id: farmer.id,
-      role: 'farmer',
-      mobile: farmer.mobile_number,
-      name: farmer.name,
+      id: user.id,
+      role: user.role,
+      phone: user.phone,
+      name: user.name,
+      farmerId: user.farmer_db_id,
+      farmerCode: user.farmer_code,
+      buyerId: user.buyer_db_id,
     });
+
+    // Strip password_hash
+    delete user.password_hash;
 
     res.status(200).json({
       success: true,
       message: 'Logged in successfully',
       token,
-      user: {
-        id: farmer.id,
-        farmerCode: farmer.farmer_code,
-        name: farmer.name,
-        mobile: farmer.mobile_number,
-        aadhaarLast4: farmer.aadhaar_last4,
-        village: farmer.village,
-        district: farmer.district,
-        state: farmer.state,
-        address: farmer.address,
-        landAcres: farmer.land_acres,
-        primaryCrop: farmer.primary_crop,
-        bankAccount: farmer.bank_account,
-        ifscCode: farmer.ifsc_code,
-        status: farmer.status,
-      },
+      data: user,
+      user, // backward compatibility for frontend
+      role: user.role,
     });
   } catch (err) {
     next(err);
@@ -191,27 +215,41 @@ export const loginFarmer = async (req, res, next) => {
 };
 
 /**
- * 3. Admin / Centre Officer Login
+ * 3. Admin Login Gateway
  * POST /api/auth/admin-login
  */
 export const loginAdmin = async (req, res, next) => {
   try {
     const { username, email, password, centreCode } = req.body;
-    const identifier = username || email;
-
-    if (!identifier || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide officer user ID/email and password.',
-      });
-    }
+    const identifier = username || email || 'admin@kisan.gov.in';
 
     const result = await query(
-      `SELECT * FROM admins WHERE username = $1 OR email = $1`,
+      `SELECT * FROM users WHERE (phone = $1 OR email = $1 OR name = $1) AND role IN ('admin', 'officer')`,
       [identifier]
     );
 
     if (result.rows.length === 0) {
+      // Fallback check on admins table
+      const legacyAdmin = await query(`SELECT * FROM admins WHERE username = $1 OR email = $1`, [identifier]);
+      if (legacyAdmin.rows.length > 0) {
+        const isMatch = await bcrypt.compare(password, legacyAdmin.rows[0].password_hash);
+        if (isMatch) {
+          const token = generateToken({
+            id: legacyAdmin.rows[0].id,
+            role: 'admin',
+            name: legacyAdmin.rows[0].name,
+            centreCode: centreCode || legacyAdmin.rows[0].centre_code,
+          });
+          return res.status(200).json({
+            success: true,
+            message: 'Admin authorization granted',
+            token,
+            admin: legacyAdmin.rows[0],
+            data: legacyAdmin.rows[0],
+          });
+        }
+      }
+
       return res.status(401).json({
         success: false,
         message: 'Invalid officer credentials. User not found.',
@@ -219,7 +257,6 @@ export const loginAdmin = async (req, res, next) => {
     }
 
     const admin = result.rows[0];
-
     const isMatch = await bcrypt.compare(password, admin.password_hash);
     if (!isMatch) {
       return res.status(401).json({
@@ -231,10 +268,11 @@ export const loginAdmin = async (req, res, next) => {
     const token = generateToken({
       id: admin.id,
       role: 'admin',
-      username: admin.username,
       name: admin.name,
-      centreCode: centreCode || admin.centre_code,
+      centreCode: centreCode || 'MANDI-GZB-01',
     });
+
+    delete admin.password_hash;
 
     res.status(200).json({
       success: true,
@@ -243,11 +281,11 @@ export const loginAdmin = async (req, res, next) => {
       admin: {
         id: admin.id,
         name: admin.name,
-        username: admin.username,
         email: admin.email,
         role: admin.role,
-        centreCode: centreCode || admin.centre_code,
+        centreCode: centreCode || 'MANDI-GZB-01',
       },
+      data: admin,
     });
   } catch (err) {
     next(err);
@@ -255,81 +293,42 @@ export const loginAdmin = async (req, res, next) => {
 };
 
 /**
- * 4. Get Current Logged-in User Profile
- * GET /api/auth/me
+ * 4. Get Current Authenticated User (GET /api/auth/me)
  */
 export const getMe = async (req, res, next) => {
   try {
     if (!req.user) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-
-    if (req.user.role === 'admin') {
-      const result = await query(`SELECT id, username, email, name, role, centre_code, created_at FROM admins WHERE id = $1`, [req.user.id]);
-      if (result.rows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Admin not found' });
-      }
-      return res.status(200).json({ success: true, user: result.rows[0], role: 'admin' });
-    } else {
-      const result = await query(`SELECT id, farmer_code, name, mobile_number, aadhaar_last4, address, village, district, state, land_acres, primary_crop, estimated_quantity, bank_account, ifsc_code, status, registration_date FROM farmers WHERE id = $1`, [req.user.id]);
-      if (result.rows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Farmer not found' });
-      }
-      return res.status(200).json({ success: true, user: result.rows[0], role: 'farmer' });
-    }
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * 5. Update Farmer Profile
- * PUT /api/farmer/profile
- */
-export const updateFarmerProfile = async (req, res, next) => {
-  try {
-    const farmerId = req.user?.id || req.body.id;
-    if (!farmerId) {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
-    const { name, address, village, district, state, landAcres, primaryCrop } = req.body;
-
-    const updateSql = `
-      UPDATE farmers
-      SET name = COALESCE($1, name),
-          address = COALESCE($2, address),
-          village = COALESCE($3, village),
-          district = COALESCE($4, district),
-          state = COALESCE($5, state),
-          land_acres = COALESCE($6, land_acres),
-          primary_crop = COALESCE($7, primary_crop),
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = $8
-      RETURNING id, farmer_code, name, mobile_number, aadhaar_last4, address, village, district, state, land_acres, primary_crop, bank_account, ifsc_code, status
-    `;
-
-    const result = await query(updateSql, [
-      name,
-      address,
-      village,
-      district,
-      state,
-      landAcres ? Number(landAcres) : null,
-      primaryCrop,
-      farmerId,
-    ]);
+    const result = await query(
+      `SELECT u.id, u.name, u.email, u.phone, u.role, u.address, u.village, u.district, u.state, u.created_at,
+              f.id as farmer_db_id, f.farmer_id as farmer_code, f.land_area, f.crops,
+              b.id as buyer_db_id, b.organization_name, b.license_number
+       FROM users u
+       LEFT JOIN farmers f ON u.id = f.user_id
+       LEFT JOIN buyers b ON u.id = b.user_id
+       WHERE u.id = $1`,
+      [req.user.id]
+    );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Farmer not found' });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
+
+    const user = result.rows[0];
 
     res.status(200).json({
       success: true,
-      message: 'Profile updated successfully in database',
-      user: result.rows[0],
+      data: user,
+      user, // backward compatibility
+      role: user.role,
     });
   } catch (err) {
     next(err);
   }
 };
+
+// Aliases for backward compatibility
+export const registerFarmer = registerUser;
+export const loginFarmer = loginUser;
