@@ -65,6 +65,8 @@ export const FarmerRegister = () => {
 
     setLoading(true);
     try {
+      console.log('Password length being sent:', formData.password.length);
+
       await registerFarmer({
         name: formData.name,
         mobile: formData.mobile,

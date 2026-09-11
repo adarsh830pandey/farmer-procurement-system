@@ -229,30 +229,9 @@ export const loginAdmin = async (req, res, next) => {
     );
 
     if (result.rows.length === 0) {
-      // Fallback check on admins table
-      const legacyAdmin = await query(`SELECT * FROM admins WHERE username = $1 OR email = $1`, [identifier]);
-      if (legacyAdmin.rows.length > 0) {
-        const isMatch = await bcrypt.compare(password, legacyAdmin.rows[0].password_hash);
-        if (isMatch) {
-          const token = generateToken({
-            id: legacyAdmin.rows[0].id,
-            role: 'admin',
-            name: legacyAdmin.rows[0].name,
-            centreCode: centreCode || legacyAdmin.rows[0].centre_code,
-          });
-          return res.status(200).json({
-            success: true,
-            message: 'Admin authorization granted',
-            token,
-            admin: legacyAdmin.rows[0],
-            data: legacyAdmin.rows[0],
-          });
-        }
-      }
-
       return res.status(401).json({
         success: false,
-        message: 'Invalid officer credentials. User not found.',
+        message: 'Invalid admin credentials. User not found.',
       });
     }
 

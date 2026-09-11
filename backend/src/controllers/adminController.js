@@ -56,21 +56,36 @@ export const getDashboardStats = async (req, res, next) => {
 export const getFarmersList = async (req, res, next) => {
   try {
     const { search } = req.query;
+
     let sql = `
-      SELECT id, farmer_code as "id", name, mobile_number as mobile,
-             village, district, state, land_acres as "landAcres",
-             primary_crop as crop, estimated_quantity as "estProduce",
-             status, registration_date
-      FROM farmers
+      SELECT
+        f.farmer_id AS "id",
+        u.name,
+        u.phone AS mobile,
+        u.village,
+        u.district,
+        u.state,
+        f.land_area AS "landAcres",
+        f.crops AS crop,
+        0 AS "estProduce",
+        u.created_at AS "registrationDate"
+      FROM farmers f
+      JOIN users u ON f.user_id = u.id
     `;
+
     const params = [];
 
     if (search) {
-      sql += ` WHERE name ILIKE $1 OR mobile_number ILIKE $1 OR village ILIKE $1 OR farmer_code ILIKE $1`;
+      sql += `
+        WHERE u.name ILIKE $1
+        OR u.phone ILIKE $1
+        OR u.village ILIKE $1
+        OR f.farmer_id ILIKE $1
+      `;
       params.push(`%${search}%`);
     }
 
-    sql += ` ORDER BY created_at DESC`;
+    sql += ` ORDER BY u.created_at DESC`;
 
     const result = await query(sql, params);
 
