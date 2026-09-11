@@ -9,12 +9,6 @@ const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:post
 
 export const pool = new Pool({
   connectionString,
-  // Fallback to separate parameters if individual env vars exist
-  host: process.env.PGHOST,
-  port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
-  database: process.env.PGDATABASE,
   max: 20, // Max 20 concurrent connections in pool
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
