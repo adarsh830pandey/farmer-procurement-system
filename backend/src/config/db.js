@@ -12,7 +12,7 @@ export const pool = new Pool({
   max: 20, // Max 20 concurrent connections in pool
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
-  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  ssl: { rejectUnauthorized: false },
 });
 
 /**
